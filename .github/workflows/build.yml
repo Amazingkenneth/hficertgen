@@ -43,15 +43,15 @@ jobs:
 
       # --- macOS Optimization (Manual Strip) ---
       # We manually strip the binary because it is safer than doing it inside the spec file
-      - name: Optimize Binary (macOS Only)
-        if: runner.os == 'macOS'
-        run: |
-          echo "Original Size:"
-          du -h dist/CertificateGenerator
-          # Strip debug symbols
-          strip dist/CertificateGenerator
-          echo "Stripped Size:"
-          du -h dist/CertificateGenerator
+      # - name: Optimize Binary (macOS Only)
+      #   if: runner.os == 'macOS'
+      #   run: |
+      #     echo "Original Size:"
+      #     du -h dist/CertificateGenerator
+      #     # Strip debug symbols
+      #     strip dist/CertificateGenerator
+      #     echo "Stripped Size:"
+      #     du -h dist/CertificateGenerator
 
       # --- Upload Artifacts ---
       - name: Upload Executable
