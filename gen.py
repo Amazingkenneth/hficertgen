@@ -19,7 +19,7 @@ class CertificateGeneratorApp(ctk.CTk):
         super().__init__()
 
         # Window Setup
-        self.title("Bilingual School Certificate Generator (Pro Version)")
+        self.title("HFI Certificate Generator")
         self.geometry("1200x800")
 
         # State Variables

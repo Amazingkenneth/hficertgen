@@ -42,6 +42,14 @@ jobs:
           name: CertificateGenerator-Windows
           path: dist/CertificateGenerator.exe
 
+      # macOS Artifact
+      - name: Zip macOS Executable
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          zip CertificateGenerator-macOS.zip CertificateGenerator
+          cd ..
+
       - name: Upload macOS Artifact
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
