@@ -42,13 +42,6 @@ jobs:
           name: CertificateGenerator-Windows
           path: dist/CertificateGenerator.exe
 
-      # macOS Artifact - Zipping is recommended for .app bundles to preserve permissions
-      - name: Zip macOS App
-        if: runner.os == 'macOS'
-        run: |
-          cd dist
-          zip -r CertificateGenerator-macOS.zip CertificateGenerator.app
-
       - name: Upload macOS Artifact
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -60,6 +53,7 @@ jobs:
     name: Create Release
     needs: build # Waits for the build job to finish
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/heads/')
 
     steps:
       - name: Download Windows Artifact
