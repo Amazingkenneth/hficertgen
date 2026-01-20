@@ -2,12 +2,12 @@ import os
 import threading
 import datetime
 import customtkinter as ctk
-import tkinter.messagebox as messagebox  # Native dialogs still look best
+import tkinter.messagebox as messagebox
 from tkinter import filedialog
 import pypinyin
 from docxtpl import DocxTemplate
 from openpyxl import load_workbook
-from tksheet import Sheet  # The best modern table widget for pasting/editing
+from tksheet import Sheet
 
 # Configuration for CustomTkinter
 ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
