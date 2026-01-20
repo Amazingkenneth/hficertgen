@@ -1,439 +1,473 @@
-import streamlit as st
-import pandas as pd
-import tempfile
-import zipfile
-import platform
+import os
 import threading
-import time
-from datetime import datetime, date
-from pathlib import Path
+import datetime
+import customtkinter as ctk
+import tkinter.messagebox as messagebox  # Native dialogs still look best
+from tkinter import filedialog
+import pypinyin
 from docxtpl import DocxTemplate
-from pypdf import PdfWriter
-from pypinyin import pinyin, Style
+from openpyxl import load_workbook
+from tksheet import Sheet  # The best modern table widget for pasting/editing
 
-# Try importing docx2pdf, handle missing dependency gracefully for UI only
-try:
-    from docx2pdf import convert
+# Configuration for CustomTkinter
+ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
+ctk.set_default_color_theme("blue")  # Themes: "blue" (standard), "green", "dark-blue"
 
-    DOCX2PDF_AVAILABLE = True
-except ImportError:
-    DOCX2PDF_AVAILABLE = False
 
-# Session State Initialization
-if "is_generating" not in st.session_state:
-    st.session_state.is_generating = False
+class CertificateGeneratorApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        # Window Setup
+        self.title("Bilingual School Certificate Generator (Pro Version)")
+        self.geometry("1200x800")
+
+        # State Variables
+        self.template_path = ctk.StringVar()
+        self.excel_path = ctk.StringVar()
+        self.output_dir = ctk.StringVar(value=os.path.join(os.getcwd(), "Output"))
+
+        # Store data keys (headers) to map back to dictionary later
+        self.data_keys = []
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        # Configure Grid Layout
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)  # The table gets the most space
+
+        # === 1. Configuration Area ===
+        config_frame = ctk.CTkFrame(self, corner_radius=10)
+        config_frame.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
+        config_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            config_frame, text="Configuration", font=("Roboto", 16, "bold")
+        ).grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
+
+        # Template Selection
+        ctk.CTkLabel(config_frame, text="Word Template:").grid(
+            row=1, column=0, padx=10, pady=5, sticky="w"
+        )
+        ctk.CTkEntry(config_frame, textvariable=self.template_path).grid(
+            row=1, column=1, padx=10, pady=5, sticky="ew"
+        )
+        ctk.CTkButton(
+            config_frame, text="Browse", width=100, command=self.load_template
+        ).grid(row=1, column=2, padx=10, pady=5)
+
+        # Excel Selection
+        ctk.CTkLabel(config_frame, text="Student Data:").grid(
+            row=2, column=0, padx=10, pady=5, sticky="w"
+        )
+        ctk.CTkEntry(config_frame, textvariable=self.excel_path).grid(
+            row=2, column=1, padx=10, pady=5, sticky="ew"
+        )
+        ctk.CTkButton(
+            config_frame,
+            text="Import Excel",
+            width=100,
+            command=self.load_excel,
+            fg_color="#04A760",
+            hover_color="#229965",
+        ).grid(row=2, column=2, padx=10, pady=5)
+
+        # Output Folder
+        ctk.CTkLabel(config_frame, text="Output Folder:").grid(
+            row=3, column=0, padx=10, pady=5, sticky="w"
+        )
+        ctk.CTkEntry(config_frame, textvariable=self.output_dir).grid(
+            row=3, column=1, padx=10, pady=5, sticky="ew"
+        )
+        ctk.CTkButton(
+            config_frame, text="Browse", width=100, command=self.select_output_dir
+        ).grid(row=3, column=2, padx=10, pady=(5, 10))
+
+        # === 2. Data Editor (tksheet) ===
+        table_frame = ctk.CTkFrame(self, corner_radius=10)
+        table_frame.grid(row=1, column=0, padx=20, pady=0, sticky="nsew")
+
+        # Header for Table section
+        header_frame = ctk.CTkFrame(table_frame, fg_color="transparent")
+        header_frame.pack(fill="x", padx=10, pady=5)
+        ctk.CTkLabel(
+            header_frame, text="Data Editor", font=("Roboto", 16, "bold")
+        ).pack(side="left")
+        ctk.CTkLabel(
+            header_frame,
+            text="(Directly edit cells or Paste from Excel using Ctrl+V)",
+            text_color="gray",
+        ).pack(side="left", padx=10)
+
+        # Initialize Sheet
+        self.sheet = Sheet(
+            table_frame,
+            theme="dark blue" if ctk.get_appearance_mode() == "Dark" else "light blue",
+            empty_horizontal=0,
+            empty_vertical=0,
+            font=("Roboto", 16, "normal"),
+            header_font=("Roboto", 16, "bold"),
+            index_font=("Roboto", 14, "normal"),
+        )
+        self.sheet.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Enable Editing and Pasting bindings
+        self.sheet.enable_bindings(
+            (
+                "single_select",
+                "drag_select",
+                "row_select",
+                "column_select",
+                "edit_cell",
+                "paste",
+                "cut",
+                "copy",
+                "delete",
+                "arrowkeys",
+                "rc_select",  # Right click select
+                "rc_insert_row",  # Right click insert row
+                "rc_delete_row",  # Right click delete row
+            )
+        )
+
+        # === 3. Action Area ===
+        action_frame = ctk.CTkFrame(self, corner_radius=10, height=80)
+        action_frame.grid(row=2, column=0, padx=20, pady=20, sticky="ew")
+
+        self.status_label = ctk.CTkLabel(action_frame, text="Ready", text_color="gray")
+        self.status_label.pack(side="left", padx=20)
+
+        self.generate_btn = ctk.CTkButton(
+            action_frame,
+            text="Generate Certificates",
+            font=("Roboto", 15, "bold"),
+            height=40,
+            state="disabled",
+            command=self.start_generation_thread,
+        )
+        self.generate_btn.pack(side="right", padx=20, pady=15)
+
+        self.progress_bar = ctk.CTkProgressBar(action_frame, height=10)
+        self.progress_bar.set(0)
+        self.progress_bar.pack(side="right", fill="x", expand=True, padx=20)
+
+    # ==========================
+    # Logic Implementation
+    # ==========================
+
+    def load_template(self):
+        f = filedialog.askopenfilename(filetypes=[("Word Documents", "*.docx")])
+        if f:
+            self.template_path.set(f)
+
+    def select_output_dir(self):
+        d = filedialog.askdirectory()
+        if d:
+            self.output_dir.set(d)
+
+    def load_excel(self):
+        filename = filedialog.askopenfilename(
+            filetypes=[("Excel Files", "*.xlsx *.xlsm")]
+        )
+        if not filename:
+            return
+        self.excel_path.set(filename)
+        self.status_label.configure(text="Processing Excel data...")
+        threading.Thread(
+            target=self._process_excel_thread, args=(filename,), daemon=True
+        ).start()
+
+    def _process_excel_thread(self, filename):
+        try:
+            wb = load_workbook(filename, data_only=True)
+            ws = wb.active
+            headers = [cell.value for cell in ws[1]]
+
+            # Map columns
+            col_indices = self._map_columns(headers)
+            if not col_indices:
+                self.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "Error", "Could not find required columns (Name, ID, etc)."
+                    ),
+                )
+                return
+
+            processed_rows = []
+
+            # Use iter_rows to read data
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                # Basic validation
+                name_idx = col_indices.get("name_zh")
+                if not row[name_idx]:
+                    continue
+
+                entry_dict = self._parse_row_data(row, col_indices)
+                processed_rows.append(entry_dict)
+
+            # Update UI in main thread
+            self.after(0, lambda: self._update_table_data(processed_rows))
+
+        except Exception as e:
+            self.after(
+                0,
+                lambda: messagebox.showerror(
+                    "Error", f"Failed to load Excel: {str(e)}"
+                ),
+            )
+
+    def _update_table_data(self, data_list):
+        if not data_list:
+            self.status_label.configure(text="No valid data found.")
+            return
+
+        # Extract headers (keys) from the first dictionary
+        self.data_keys = list(data_list[0].keys())
+
+        # Transform list of dicts -> list of lists for tksheet
+        sheet_data = []
+        for entry in data_list:
+            row_data = [entry.get(k, "") for k in self.data_keys]
+            sheet_data.append(row_data)
+
+        # Set headers and data
+        self.sheet.headers(self.data_keys)
+        self.sheet.set_sheet_data(sheet_data)
+
+        # Auto resize columns to fit data
+        self.sheet.column_width(column="all", width="text")
+
+        self.generate_btn.configure(state="normal")
+        self.status_label.configure(
+            text=f"Loaded {len(data_list)} students. You can now edit data above."
+        )
+
+    def start_generation_thread(self):
+        if not self.template_path.get():
+            messagebox.showerror("Error", "Please select a template file.")
+            return
+
+        # Lock the button
+        self.generate_btn.configure(state="disabled", text="Generating...")
+        threading.Thread(target=self.generate_docs, daemon=True).start()
+
+    def generate_docs(self):
+        tpl_path = self.template_path.get()
+        out_path = self.output_dir.get()
+        if not os.path.exists(out_path):
+            os.makedirs(out_path)
+
+        # Get data directly from the sheet (allows for manual edits)
+        current_data = self.sheet.get_sheet_data()
+        total = len(current_data)
+
+        # Reset progress
+        self.after(0, lambda: self.progress_bar.set(0))
+
+        try:
+            doc = DocxTemplate(tpl_path)
+
+            for i, row_values in enumerate(current_data):
+                # Reconstruct dictionary context from sheet row
+                context = dict(zip(self.data_keys, row_values))
+
+                # Update progress
+                progress = (i + 1) / total
+                self.after(
+                    0, lambda p=progress, idx=i: self._update_progress_ui(p, idx, total)
+                )
+
+                # Render
+                doc.render(context)
+
+                safe_name = str(context.get("name_zh", "Doc")).replace("/", "_")
+                safe_id = str(context.get("student_id", "Unknown"))
+                filename = f"{safe_id}_{safe_name}.docx"
+                doc.save(os.path.join(out_path, filename))
+
+            self.after(0, self._finish_generation_ui)
+
+        except Exception as e:
+            self.after(
+                0, lambda: messagebox.showerror("Error", f"Generation failed: {str(e)}")
+            )
+            self.after(0, self._reset_ui)
+
+    def _update_progress_ui(self, progress, current, total):
+        self.progress_bar.set(progress)
+        self.status_label.configure(text=f"Generating {current + 1}/{total}...")
+
+    def _finish_generation_ui(self):
+        self.progress_bar.set(1.0)
+        self.status_label.configure(text="Completed!")
+        self.generate_btn.configure(state="normal", text="Generate Certificates")
+        messagebox.showinfo("Success", f"Files generated in:\n{self.output_dir.get()}")
+
+    def _reset_ui(self):
+        self.generate_btn.configure(state="normal", text="Generate Certificates")
+
+    # ==========================
+    # Helper Logic (Kept similar)
+    # ==========================
+
+    def _map_columns(self, headers):
+        mapping = {}
+        keywords = {
+            "name_zh": ["姓名", "legal name", "Name"],
+            "gender_zh": ["性别", "Gender"],
+            "id_type_zh": ["证件类型", "ID Type"],
+            "id_number": ["身份证件号码", "No.", "ID Number"],
+            "dob": ["出生日期", "Birth"],
+            "admit_date": ["入学年份", "Admission"],
+            "student_id": ["学号", "Student ID"],
+            "grade": ["在读年级", "Grade"],
+        }
+        headers_str = [str(h) if h else "" for h in headers]
+        for key, kw_list in keywords.items():
+            found = False
+            for idx, header in enumerate(headers_str):
+                for kw in kw_list:
+                    if kw in header:
+                        mapping[key] = idx
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                mapping[key] = -1
+
+        if mapping.get("name_zh", -1) == -1:
+            return None
+        return mapping
+
+    def _parse_row_data(self, row, idx_map):
+        def get_val(key):
+            idx = idx_map.get(key, -1)
+            if idx == -1 or idx >= len(row):
+                return ""
+            return str(row[idx]).strip() if row[idx] is not None else ""
+
+        entry = {}
+        current_date = datetime.date.today()
+
+        # Basic fields
+        entry["name_zh"] = get_val("name_zh")
+        entry["gender_zh"] = get_val("gender_zh")
+        entry["id_type_zh"] = get_val("id_type_zh") or "身份证"
+        entry["grade"] = get_val("grade")
+        entry["student_id"] = get_val("student_id")
+
+        # ID cleanup
+        raw_id = get_val("id_number")
+        entry["id_number"] = (
+            raw_id.replace("‘", "").replace("’", "").replace("'", "").strip()
+        )
+
+        # Date Parsing
+        raw_dob = row[idx_map.get("dob", -1)] if idx_map.get("dob", -1) != -1 else ""
+        dob_dt = self._smart_date_parse(raw_dob)
+        if dob_dt:
+            entry["dob_zh"] = dob_dt.strftime("%Y年%m月%d日")
+            entry["dob_en"] = dob_dt.strftime("%B %d, %Y")
+        else:
+            entry["dob_zh"] = str(raw_dob)
+            entry["dob_en"] = str(raw_dob)
+
+        # Admit Date
+        raw_admit = (
+            row[idx_map.get("admit_date", -1)]
+            if idx_map.get("admit_date", -1) != -1
+            else ""
+        )
+        admit_dt = self._smart_date_parse(raw_admit)
+        if admit_dt:
+            entry["admit_year"] = str(admit_dt.year)
+            entry["admit_month"] = str(admit_dt.month)
+            entry["admit_month_en"] = admit_dt.strftime("%B")
+        else:
+            # Fallback for text like "2024-08"
+            if isinstance(raw_admit, str) and "-" in raw_admit:
+                parts = raw_admit.split("-")
+                entry["admit_year"] = parts[0]
+                entry["admit_month"] = parts[1] if len(parts) > 1 else "??"
+                import calendar
+
+                try:
+                    entry["admit_month_en"] = calendar.month_name[int(parts[1])]
+                except:
+                    entry["admit_month_en"] = "Unknown"
+            else:
+                entry["admit_year"] = entry["admit_month"] = entry["admit_month_en"] = (
+                    "Unknown"
+                )
+
+        # Current Date
+        entry["date_zh"] = current_date.strftime("%Y年%m月%d日")
+        entry["date_en"] = current_date.strftime("%B %d, %Y")
+
+        # Translations
+        entry["name_en"] = get_english_name(entry["name_zh"])
+
+        # Gender Translation
+        if "男" in entry["gender_zh"]:
+            entry["gender_en"] = "Male"
+        elif "女" in entry["gender_zh"]:
+            entry["gender_en"] = "Female"
+        else:
+            entry["gender_en"] = entry["gender_zh"]
+
+        # ID Type Translation
+        if "身份证" in entry["id_type_zh"]:
+            entry["id_type_en"] = "ID Card"
+        elif "护照" in entry["id_type_zh"]:
+            entry["id_type_en"] = "Passport"
+        else:
+            entry["id_type_en"] = "ID Document"
+
+        return entry
+
+    def _smart_date_parse(self, val):
+        if val is None:
+            return None
+        if isinstance(val, (datetime.datetime, datetime.date)):
+            return val
+        val_str = str(val).strip()
+        if not val_str:
+            return None
+
+        formats = [
+            "%Y/%m/%d %H:%M:%S",
+            "%Y/%m/%d",
+            "%m/%d/%Y",
+            "%Y-%m-%d",
+            "%Y-%m",
+            "%Y.%m.%d",
+            "%Y%m%d",
+        ]
+        for fmt in formats:
+            try:
+                return datetime.datetime.strptime(val_str, fmt)
+            except ValueError:
+                continue
+        return None
 
 
 def get_english_name(chinese_name):
-    """
-    Converts Chinese name to 'Surname, Firstname' format.
-    Assumes first character is surname for simplicity in standard names.
-    If already English, returns as-is.
-    """
-    # Check if already English (contains only ASCII letters and spaces)
+    # (Helper function logic same as before)
     if all(ord(c) < 128 for c in chinese_name if c.isalpha()):
         return chinese_name
-
     if not chinese_name or len(chinese_name) < 2:
         return ""
-
-    # Get pinyin list
-    py_list = pinyin(chinese_name, style=Style.NORMAL)
-    # py_list is like [['zhang'], ['yi'], ['san']]
-
+    py_list = pypinyin.pinyin(chinese_name, style=pypinyin.Style.NORMAL)
     if not py_list:
         return ""
-
-    # Capitalize Surname (1st char)
     surname = py_list[0][0].capitalize()
-
-    # Join Firstname parts (rest of chars) and capitalize
     firstname = "".join([x[0] for x in py_list[1:]]).capitalize()
-
     return f"{surname}, {firstname}"
 
 
-def parse_id_card(id_card: str):
-    """
-    Parses Chinese Resident ID for Raw Gender (M/F) and Date Object.
-    Returns: (gender_code, dob_date_obj, is_standard)
-    """
-    id_str = str(id_card).strip()
-
-    if len(id_str) != 18 or not id_str[:-1].isdigit():
-        return None, None, False
-
-    try:
-        # Extract DOB
-        dob_str = id_str[6:14]
-        dob_obj = datetime.strptime(dob_str, "%Y%m%d").date()
-
-        # Extract Gender
-        gender_num = int(id_str[16])
-        gender_code = "M" if gender_num % 2 != 0 else "F"
-
-        return gender_code, dob_obj, True
-    except:
-        return None, None, False
-
-
-def num_to_ordinal(n: int):
-    """Converts int (10) to string ('10th')."""
-    try:
-        n = int(n)
-        if 11 <= (n % 100) <= 13:
-            suffix = "th"
-        else:
-            suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-        return f"{n}{suffix}"
-    except:
-        return str(n)
-
-
-def num_to_chinese_grade(n):
-    """Simple mapping for grades 1-12 to Chinese characters."""
-    mapping = {
-        1: "一",
-        2: "二",
-        3: "三",
-        4: "四",
-        5: "五",
-        6: "六",
-        7: "七",
-        8: "八",
-        9: "九",
-        10: "十",
-        11: "十一",
-        12: "十二",
-    }
-    return mapping.get(int(n), str(n))
-
-
-def num_to_month(n):
-    """Converts int month (1-12) to string month name."""
-    months = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ]
-    try:
-        return months[int(n) - 1]
-    except:
-        return str(n)
-
-
-st.set_page_config(page_title="HFI Certificate Generator", layout="wide")
-
-st.title("HFI Certificate Generator")
-st.markdown(
-    """
-Upload a Word template and student data to generate personalized certificates.
-1. Prepare a `.docx` template with Jinja2 tags (see instructions below).
-2. Upload an Excel file with student data (names, IDs, etc.).
-3. Review and edit parsed data in the table.
-4. Generate and download certificates in `.docx` and optional `.pdf` formats.
-"""
-)
-
-# Instructions for Template
-with st.expander("ℹ️ How to prepare your Word Template"):
-    st.markdown(
-        """
-    Ensure your `.docx` file uses these exact Jinja2 tags (double curly braces):
-    
-    * `{{ name_zh }}` - Student's Chinese Name
-    * `{{ name_en }}` - Student's English Name
-    * `{{ gender_zh }}` - Gender in Chinese (男/女)
-    * `{{ gender_en }}` - Gender in English (Male/Female)
-    * `{{ id_type_zh }}` - ID Type in Chinese (身份证/护照/证件)
-    * `{{ id_type_en }}` - ID Type in English (ID Card/Passport/Document)
-    * `{{ id_number }}` - ID Number
-    * `{{ dob_zh }}` - Date of Birth in Chinese (YYYY年MM月DD日)
-    * `{{ dob_en }}` - Date of Birth in English (MM/DD/YYYY)
-    * `{{ student_id }}` - Student ID
-    * `{{ admit_year }}` - Year of Admission
-    * `{{ admit_month }}` - Month of Admission (1-12)
-    * `{{ admit_month_en }}` - Month name in English
-    * `{{ grade_zh }}` - Grade in Chinese (九/十/十一/十二...)
-    * `{{ grade_en }}` - Grade in English (9th/10th/11th/12th...)
-    * `{{ date_zh }}` - Current date in Chinese (YYYY年MM月DD日)
-    * `{{ date_en }}` - Current date in English (Month DD, YYYY)
-    """
-    )
-
-# Warning for PDF conversion
-if platform.system() not in ["Windows", "Darwin"]:
-    st.warning(
-        "⚠️ Linux/Cloud environment detected. PDF conversion requires MS Word installed locally (Windows/Mac). Only .docx generation will work reliably here."
-    )
-
-col1, col2 = st.columns(2)
-with col1:
-    template_file = st.file_uploader("Upload Template (.docx)", type="docx")
-with col2:
-    data_file = st.file_uploader("Upload Student Data (.xlsx)", type="xlsx")
-
-if template_file and data_file:
-    st.divider()
-
-    # Load Data
-    try:
-        df = pd.read_excel(data_file)
-        df.columns = df.columns.str.strip()
-        required_cols = ["名字", "证件号码", "学号", "年级", "入学年份", "入学月份"]
-        if any(c not in df.columns for c in required_cols):
-            st.error(f"Missing columns. Required: {required_cols}")
-            st.stop()
-    except Exception as e:
-        st.error(f"Error reading Excel: {e}")
-        st.stop()
-
-    editor_data = []
-
-    for index, row in df.iterrows():
-        raw_name = str(row["名字"])
-        raw_id = str(row["证件号码"])
-        grade_int = row["年级"]
-
-        # 1. Infer Gender/DOB (Raw formats for the Editor)
-        gender_code, dob_date, is_standard = parse_id_card(raw_id)
-
-        name_en = get_english_name(raw_name)
-
-        editor_data.append(
-            {
-                "Name_ZH": raw_name,
-                "Name_EN": name_en,
-                "Student_ID": row["学号"],
-                "ID_Type": "身份证" if is_standard else "证件",
-                "ID_Number": raw_id,
-                "Gender": gender_code,  # 'M' or 'F' or None
-                "DOB": dob_date,  # Date object or None
-                "Grade": grade_int,
-                "Admit_Year": row["入学年份"],
-                "Admit_Month": row["入学月份"],
-            }
-        )
-
-    edit_df = pd.DataFrame(editor_data)
-
-    st.subheader("📝 Verify & Edit Data")
-    st.caption(
-        "For Passport holders, simply select Gender (M/F) and pick the Date of Birth."
-    )
-
-    # --- SMART EDITOR ---
-    # Here we use column_config to give dropdowns and date pickers
-    edited_df = st.data_editor(
-        edit_df,
-        column_config={
-            "Name_EN": "Name",
-            "Name_ZH": "名字",
-            "Student_ID": "学号",
-            "Admit_Year": "入学年份",
-            "Admit_Month": "入学月份",
-            "ID_Number": "证件号码",
-            "Grade": "年级",
-            "Gender": st.column_config.SelectboxColumn(
-                "Gender (M/F)",
-                help="Select M for Male, F for Female",
-                width="small",
-                options=["M", "F"],
-                required=True,
-            ),
-            "DOB": st.column_config.DateColumn(
-                "出生日期",
-                format="MM-DD-YYYY",
-                min_value=date(2006, 1, 1),
-                max_value=date.today(),
-                required=True,
-            ),
-            "ID_Type": st.column_config.SelectboxColumn(
-                "证件类型",
-                options=["身份证", "护照", "证件"],
-                width="small",
-                required=True,
-            ),
-        },
-        num_rows="dynamic",
-    )
-
-    st.divider()
-    # Settings
-    c1, c2, c3, _ = st.columns(4)
-    with c1:
-        generate_pdf = st.checkbox("Generate PDFs", value=True)
-    with c2:
-        merge_pdf = st.checkbox("Merge into one PDF", value=False)
-    with c3:
-
-        def start_generation():
-            st.session_state.is_generating = True
-
-        st.button(
-            "🚀 Generate",
-            on_click=start_generation,
-            disabled=st.session_state.is_generating,
-            type="primary",
-        )
-
-    if st.session_state.is_generating:
-
-        # Status Containers
-        status_box = st.status("Processing...", expanded=True)
-        progress_bar = status_box.progress(0)
-
-        with tempfile.TemporaryDirectory() as tmpdirname:
-            output_dir = Path(tmpdirname)
-            word_dir = output_dir / "word"
-            pdf_dir = output_dir / "pdf"
-            word_dir.mkdir()
-            pdf_dir.mkdir()
-
-            temp_template_path = output_dir / "template.docx"
-            with open(temp_template_path, "wb") as f:
-                f.write(template_file.getbuffer())
-
-            # Current Date
-            today = datetime.now()
-            today_zh = today.strftime("%Y年%m月%d日")
-            today_en = today.strftime("%B %d, %Y")
-
-            total_rows = len(edited_df)
-
-            # --- Generation Loop ---
-            for i, row in edited_df.iterrows():
-
-                raw_gender = str(row["Gender"]).upper()
-                if raw_gender.startswith("M"):
-                    gender_zh, gender_en = "男", "Male"
-                elif raw_gender.startswith("F"):
-                    gender_zh, gender_en = "女", "Female"
-                else:
-                    gender_zh, gender_en = "N/A", "N/A"  # Fallback
-
-                id_type_zh = row["ID_Type"]
-                if id_type_zh == "护照":
-                    id_type_en = "Passport"
-                elif id_type_zh == "证件":
-                    id_type_en = "ID Document"
-                else:
-                    id_type_en = "ID Card"
-
-                raw_dob = row["DOB"]
-                if isinstance(raw_dob, (date, datetime)):
-                    dob_zh = raw_dob.strftime("%Y年%m月%d日")
-                    dob_en = raw_dob.strftime("%B %d, %Y")
-                else:
-                    dob_zh, dob_en = str(raw_dob), str(raw_dob)
-
-                grade_int = row["Grade"]
-                grade_zh = num_to_chinese_grade(grade_int)
-                grade_en = num_to_ordinal(grade_int)
-
-                context = {
-                    "name_zh": row["Name_ZH"],
-                    "name_en": row["Name_EN"],
-                    "gender_zh": gender_zh,
-                    "gender_en": gender_en,
-                    "id_type_zh": id_type_zh,
-                    "id_type_en": id_type_en,
-                    "id_number": row["ID_Number"],
-                    "dob_zh": dob_zh,
-                    "dob_en": dob_en,
-                    "student_id": row["Student_ID"],
-                    "admit_year": row["Admit_Year"],
-                    "admit_month": row["Admit_Month"],
-                    "admit_month_en": num_to_month(row["Admit_Month"]),
-                    "grade_zh": grade_zh,
-                    "grade_en": grade_en,
-                    "date_zh": today_zh,
-                    "date_en": today_en,
-                }
-
-                # 3. Render
-                doc = DocxTemplate(temp_template_path)
-                doc.render(context)
-
-                filename_base = f"{row['Student_ID']}_{row['Name_ZH']}"
-                docx_path = word_dir / f"{filename_base}.docx"
-                doc.save(docx_path)
-                progress_bar.progress((i + 1) / total_rows * 0.1)
-
-            if generate_pdf and DOCX2PDF_AVAILABLE:
-                status_box.write("Converting to PDF (Batch Processing)...")
-
-                conversion_error = []
-
-                def conversion_worker():
-                    try:
-                        convert(str(word_dir), str(pdf_dir))
-                    except Exception as e:
-                        conversion_error.append(e)
-
-                # --- 2. Start Thread ---
-                thread = threading.Thread(target=conversion_worker)
-                thread.start()
-
-                # --- 3. The "Log-Based" Asymptotic Loop ---
-                current_progress = 0.1  # Starting at 20%
-                limit = 0.90  # The limit we approach but never quite reach
-                speed_factor = 0.001
-
-                while thread.is_alive():
-                    gap = limit - current_progress
-                    step = gap * speed_factor
-                    current_progress += step
-                    progress_bar.progress(current_progress)
-                    time.sleep(0.04)
-
-                # --- 4. Thread Finished ---
-                thread.join()
-
-                progress_bar.progress(0.9)
-
-            merged_path = None
-            if generate_pdf and merge_pdf and DOCX2PDF_AVAILABLE:
-                status_box.write("Merging PDFs...")
-                merger = PdfWriter()
-                for pdf in sorted(list(pdf_dir.glob("*.pdf"))):
-                    merger.append(str(pdf))
-                merged_path = output_dir / "All_Certificates.pdf"
-                merger.write(str(merged_path))
-                merger.close()
-
-            # --- Finish ---
-            progress_bar.progress(1.0)
-            status_box.update(
-                label="✅ Generation Complete!", state="complete", expanded=False
-            )
-
-            # Zip Creation
-            zip_buffer = tempfile.NamedTemporaryFile(delete=False)
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                for f in word_dir.glob("*.docx"):
-                    zf.write(f, arcname=f"Word/{f.name}")
-                if generate_pdf:
-                    for f in pdf_dir.glob("*.pdf"):
-                        zf.write(f, arcname=f"PDF/{f.name}")
-                    if merged_path and merged_path.exists():
-                        zf.write(merged_path, arcname="All_Certificates_Merged.pdf")
-
-            # Download Button
-            st.download_button(
-                label="📥 Download Results (.zip)",
-                data=open(zip_buffer.name, "rb").read(),
-                file_name="Certificates.zip",
-                mime="application/zip",
-            )
-else:
-    st.info("Please upload Template and Data to start.")
+if __name__ == "__main__":
+    app = CertificateGeneratorApp()
+    app.mainloop()

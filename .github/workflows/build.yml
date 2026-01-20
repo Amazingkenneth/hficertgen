@@ -1,4 +1,4 @@
-name: Build Streamlit Executables
+name: Build Executables
 
 on:
   push:
@@ -10,7 +10,6 @@ jobs:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
 
@@ -18,44 +17,58 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
+      - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+          cache: "pip"
 
-      # --- Windows Specific Setup ---
-      - name: Install UPX (Windows Only)
-        if: runner.os == 'Windows'
-        run: choco install upx --no-progress
-
-      # --- Dependency Installation ---
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # Installing exact libraries used in your project
-          pip install streamlit pandas docxtpl pypdf pypinyin docx2pdf pyinstaller openpyxl
-          # Install explicit hook requirements just in case
-          pip install packaging
-
-      # --- Build Step ---
       - name: Build with PyInstaller
-        run: pyinstaller build.spec
+        run: |
+          pyinstaller --onefile --windowed --name "CertificateGenerator" gen.py
 
-      # --- macOS Optimization (Manual Strip) ---
-      # We manually strip the binary because it is safer than doing it inside the spec file
-      # - name: Optimize Binary (macOS Only)
-      #   if: runner.os == 'macOS'
-      #   run: |
-      #     echo "Original Size:"
-      #     du -h dist/CertificateGenerator
-      #     # Strip debug symbols
-      #     strip dist/CertificateGenerator
-      #     echo "Stripped Size:"
-      #     du -h dist/CertificateGenerator
-
-      # --- Upload Artifacts ---
-      - name: Upload Executable
+      # Windows Artifact
+      - name: Upload Windows Artifact
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: CertificateGenerator-${{ runner.os }}
-          path: dist/
+          name: CertificateGenerator-Windows
+          path: dist/CertificateGenerator.exe
+
+      # macOS Artifact - Zipping is recommended for .app bundles to preserve permissions
+      - name: Zip macOS App
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          zip -r CertificateGenerator-macOS.zip CertificateGenerator.app
+
+      - name: Upload macOS Artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CertificateGenerator-macOS
+          path: dist/CertificateGenerator-macOS.zip
+
+  release:
+    name: Create Release
+    needs: build # Waits for the build job to finish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: CertificateGenerator-Windows
+
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: CertificateGenerator-macOS
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            CertificateGenerator.exe
+            CertificateGenerator-macOS.zip
+          generate_release_notes: true

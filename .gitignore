@@ -1,6 +1,5 @@
 .venv
-build/
-dist/
+Output/
 __pycache__
 *.pyc
 *.pyo
