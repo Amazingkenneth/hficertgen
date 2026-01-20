@@ -21,7 +21,14 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Installing exact libraries used in the project
+          pip install pyinstaller customtkinter pypinyin docxtpl openpyxl tksheet
+          # Install explicit hook requirements just in case
+          pip install packaging
 
       - name: Build with PyInstaller
         run: |
