@@ -1,4 +1,5 @@
 import os
+import pathlib
 import threading
 import datetime
 import customtkinter as ctk
@@ -25,7 +26,9 @@ class CertificateGeneratorApp(ctk.CTk):
         # State Variables
         self.template_path = ctk.StringVar()
         self.excel_path = ctk.StringVar()
-        self.output_dir = ctk.StringVar(value=os.path.join(os.getcwd(), "Output"))
+        self.output_dir = ctk.StringVar(
+            value=pathlib.Path(__file__).resolve().parent / "Output"
+        )
 
         # Store data keys (headers) to map back to dictionary later
         self.data_keys = []
