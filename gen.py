@@ -359,7 +359,7 @@ class CertificateGeneratorApp(ctk.CTk):
         entry["name_zh"] = get_val("name_zh")
         entry["gender_zh"] = get_val("gender_zh")
         entry["id_type_zh"] = get_val("id_type_zh") or "身份证"
-        entry["grade"] = get_val("grade")
+        entry["grade"] = self._normalize_grade(get_val("grade"))
         entry["student_id"] = get_val("student_id")
 
         # ID cleanup
@@ -430,6 +430,15 @@ class CertificateGeneratorApp(ctk.CTk):
             entry["id_type_en"] = "ID Document"
 
         return entry
+    
+    def _normalize_grade(self, val):
+        if val is None:
+            return ""
+        text = str(val).strip()
+        if text and text[0] in ("'", "’", "‘", "`"):
+            text = text[1:].strip()
+        return text
+
 
     def _smart_date_parse(self, val):
         if val is None:
